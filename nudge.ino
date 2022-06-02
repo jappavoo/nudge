@@ -1,5 +1,7 @@
 
 
+
+
 /* Example implementation of an alarm using DS3231
  *
  * VCC and GND of RTC should be connected to some power source
@@ -7,9 +9,13 @@
  * SQW should be connected to CLOCK_INTERRUPT_PIN
  * CLOCK_INTERRUPT_PIN needs to work with interrupts
  */
-
+#include <Bounce2.h>
 #include <RTClib.h>
 #include <Adafruit_DRV2605.h>
+
+//#define CONFIG_REMINDER_ALARM
+#define CONFIG_PERIODIC_ALARM
+
 
 //#define VERBOSE
 
@@ -21,32 +27,75 @@
 #define VPRINT(...) 
 #endif 
 
+#define REMINDER_RTC_ALARM 1
+
+#define PERIODIC_RTC_ALARM 2
+#define DEFAULT_PERIOD_MINUTES 20
+
 #define STRONG_CLICK 17
 #define STRONG_BUZZ 14
+#define BUTTON_PRESSED_HAPTIC STRONG_CLICK
+#define PERIODIC_ALARM_HAPTIC STRONG_BUZZ
+
 
 // #include <Wire.h>
 
 RTC_DS3231 rtc;
-Adafruit_DRV2605 drv;
+Adafruit_DRV2605 haptic;
 
 // the pin that is connected to SQW
 #define CLOCK_INTERRUPT_PIN A2
 
-#define BUTTON_INTERRUPT_PIN A0
-#ifdef VERBOSE
-int buttonCnt = 0; 
-#endif     
-long debouncing_time = 500; //Debouncing Time in Milliseconds
-volatile unsigned long last_micros;
+#define BUTTON_PIN A0
+#define DEBOUNCE_MS 5 //Debouncing Time in Milliseconds
+Bounce2::Button button = Bounce2::Button();
 
+
+void setNextPeriodic() {
+         // schedule an alarm 10 seconds in the future
+        if(!rtc.setAlarm2(
+            rtc.now() + TimeSpan(60 * DEFAULT_PERIOD_MINUTES),
+            DS3231_A2_Minute 
+            )) {
+              VPRINTLN("Error, alarm wasn't set!");
+         } else {
+            VPRINT("Periodic Alarm in: "); VPRINT(DEFAULT_PERIOD_MINUTES);
+            VPRINTLN(" minutes");
+         }
+}
+
+#define LED_PIN LED_BUILTIN
+// SET A VARIABLE TO STORE THE LED STATE
+int ledState = LOW;
+
+void toggleLed()
+{
+     // TOGGLE THE LED STATE : 
+    ledState = !ledState; // SET ledState TO THE OPPOSITE OF ledState
+    digitalWrite(LED_PIN,ledState); // WRITE THE NEW ledState
+}
 
 void setup() {
 #ifdef VERBOSE  
     Serial.begin(9600);
 #endif
+  pinMode(LED_PIN,OUTPUT);
+  digitalWrite(LED_PIN,ledState);
+
+  toggleLed();
+  
   VPRINTLN("setup:start");
-  pinMode(BUTTON_INTERRUPT_PIN, INPUT_PULLUP);  
-  attachInterrupt(digitalPinToInterrupt(BUTTON_INTERRUPT_PIN), onButtonDebounce, ISR_DEFERRED | RISING);
+  // pinMode(BUTTON_INTERRUPT_PIN, INPUT_PULLUP);  
+  button.attach(BUTTON_PIN, INPUT_PULLUP);
+  button.interval(DEBOUNCE_MS);
+  button.setPressedState(LOW); 
+#ifdef BUTTON_INTERRUPT
+#ifdef NRF52
+  attachInterrupt(digitalPinToInterrupt(BUTTON_PIN), onButton, CHANGE);
+#else 
+  attachInterrupt(digitalPinToInterrupt(BUTTON_PIN), onButton, CHANGE);
+#endif
+#endif
 
     // initializing the rtc
     if(!rtc.begin()) {
@@ -56,7 +105,7 @@ void setup() {
     }
 
   VPRINTLN("rtc: started");
-    if(rtc.lostPower()) {
+   if(rtc.lostPower()) {
        VPRINTLN("RTC lost power, let's set the time!");
         // this will adjust to the date and time at compilation
         rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
@@ -67,41 +116,51 @@ void setup() {
 
     // Making it so, that the alarm will trigger an interrupt
     pinMode(CLOCK_INTERRUPT_PIN, INPUT_PULLUP);
-    attachInterrupt(digitalPinToInterrupt(CLOCK_INTERRUPT_PIN), onAlarm, ISR_DEFERRED | FALLING);
-
+#ifdef NRF52
+    attachInterrupt(digitalPinToInterrupt(CLOCK_INTERRUPT_PIN), onAlarm, FALLING);
+#else
+    attachInterrupt(digitalPinToInterrupt(CLOCK_INTERRUPT_PIN), onAlarm, FALLING);
+#endif
     // set alarm 1, 2 flag to false (so alarm 1, 2 didn't happen so far)
     // if not done, this easily leads to problems, as both register aren't reset on reboot/recompile
-    rtc.clearAlarm(1);
-    rtc.clearAlarm(2);
+    rtc.clearAlarm(REMINDER_RTC_ALARM);
+    rtc.clearAlarm(PERIODIC_RTC_ALARM);
 
     // stop oscillating signals at SQW Pin
     // otherwise setAlarm1 will fail
     rtc.writeSqwPinMode(DS3231_OFF);
 
-    // turn off alarm 2 (in case it isn't off already)
-    // again, this isn't done at reboot, so a previously set alarm could easily go overlooked
-    rtc.disableAlarm(2);
-    // schedule an alarm 10 seconds in the future
-    if(!rtc.setAlarm1(
-            rtc.now() + TimeSpan(10),
-            DS3231_A1_Second // this mode triggers the alarm when the seconds match. See Doxygen for other options
-    )) {
-        VPRINTLN("Error, alarm wasn't set!");
-    }else {
-        VPRINTLN("Alarm will happen in 10 seconds!");
-    }
-    VPRINTLN("rtc: configed");
-     drv.begin();
-     drv.selectLibrary(1);
+#ifdef CONFIG_PERIODIC_ALARM
+    setNextPeriodic();
+    VPRINTLN("rtc: PERIODIC ALARM CONFIGURED");
+#else
+    rtc.disableAlarm(PERIODIC_RTC_ALARM);
+    VPRINTLN("rtc: PERIODIC ALARM NOT CONFIGURED");
+#endif
+
+#ifdef CONFIG_REMINDER_ALARM
+    VPRINTLN("rtc: REMINDER ALARM NYI!!!");
+#else
+    rtc.disableAlarm(REMINDER_RTC_ALARM);
+    VPRINTLN("rtc: PERIODIC REMINDER NOT CONFIGURED");
+#endif
+
+     haptic.begin();
+     haptic.selectLibrary(1);
   
   // I2C trigger by sending 'go' command 
   // default, internal trigger when sending GO command
-    drv.setMode(DRV2605_MODE_INTTRIG);  
+    haptic.setMode(DRV2605_MODE_INTTRIG);  
 #ifndef VERBOSE
-  Serial.end();   // Shut this down to limit power
+ // Serial.end();   // Shut this down to limit power
 #endif
+  toggleLed();
+  
+#ifdef NRF52
   sd_power_mode_set(NRF_POWER_MODE_LOWPWR);
   sd_power_dcdc_mode_set(NRF_POWER_DCDC_ENABLE);    // This saves power
+#endif
+
 }
 
 
@@ -484,16 +543,52 @@ void playEffect(uint8_t effect)
   }
 #endif
   // set the effect to play
-  drv.setWaveform(0, effect);  // play effect 
-  drv.setWaveform(1, 0);       // end waveform
+  haptic.setWaveform(0, effect);  // play effect 
+  haptic.setWaveform(1, 0);       // end waveform
 
   // play the effect!
-  drv.go();
+  haptic.go();
 }
 
+unsigned int event = 0;
+#ifdef BUTTON_INTERRUPT
+#define BUTTON_EVENT (1U << 0 )
+#endif
+
+#define RTC_ALARM_EVENT (1U << 1 )
+
 void loop() {
- sd_power_mode_set(NRF_POWER_MODE_LOWPWR);
-__WFI();
+#ifdef NRF52
+  sd_power_mode_set(NRF_POWER_MODE_LOWPWR);
+  waitForEvent();
+#endif
+  button.update();
+  if (button.pressed()) {
+        VPRINTLN("Button Pressed");
+        toggleLed(); 
+        playEffect(BUTTON_PRESSED_HAPTIC);
+        delay(500);
+        toggleLed();
+  }
+  if (event) {
+#ifdef BUTTON_INTERRUPT
+    if (event &  BUTTON_EVENT) {
+      event &= ~BUTTON_EVENT;  
+    }
+#endif
+    if (event & RTC_ALARM_EVENT) {
+      event &= ~RTC_ALARM_EVENT;
+      if (rtc.alarmFired(PERIODIC_RTC_ALARM)) {
+        rtc.clearAlarm(PERIODIC_RTC_ALARM);
+        VPRINTLN("Periodic Alarm");
+        setNextPeriodic();
+        toggleLed();
+        playEffect(PERIODIC_ALARM_HAPTIC);
+        delay(500);
+        toggleLed();
+        }   
+    }
+  }
 }
 
 void rtos_idle_callback(void)
@@ -503,46 +598,14 @@ void rtos_idle_callback(void)
 }
 
 void onAlarm() {
-    playEffect(STRONG_BUZZ);
-    
-    VPRINTLN("Alarm occured!");
-       char date[10] = "hh:mm:ss";
-    rtc.now().toString(date);
-    VPRINTLN(date);
-
-    // using setAlarm1, the next alarm could now be configurated
-    if(rtc.alarmFired(1)) {
-        rtc.clearAlarm(1);
-        VPRINTLN("Alarm cleared");
-            // schedule an alarm 10 seconds in the future
-      if(!rtc.setAlarm1(
-            rtc.now() + TimeSpan(10),
-            DS3231_A1_Second // this mode triggers the alarm when the seconds match. See Doxygen for other options
-      )) {
-         VPRINTLN("Error, alarm wasn't set!");
-      }else {
-         VPRINTLN("Alarm will happen in 10 seconds!");
-      }
-    }
+  event |= RTC_ALARM_EVENT;
 }
 
-
-void onButtonDebounce() {
-  if((long)(micros() - last_micros) >= debouncing_time * 1000) {
-    onButton();
-    last_micros = micros();
-  }
-}
-
+#ifdef BUTTON_INTERRUPT
 void onButton() {
-  playEffect(STRONG_CLICK);
-#ifdef VERBOSE 
-  buttonCnt++;
-#endif
-  VPRINT("B:");
-  VPRINTLN(buttonCnt);
+   event |= BUTTON_EVENT;
 }
-
+#endif
 
 /*static uint8_t read_i2c_register(uint8_t addr, uint8_t reg) {
     Wire.beginTransmission(addr);
