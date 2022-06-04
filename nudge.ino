@@ -1,7 +1,3 @@
-
-
-
-
 /* Example implementation of an alarm using DS3231
  *
  * VCC and GND of RTC should be connected to some power source
@@ -12,6 +8,50 @@
 #include <Bounce2.h>
 #include <RTClib.h>
 #include <Adafruit_DRV2605.h>
+
+//#define SET_RTC_TIME
+
+#define OLED_DISPLAY
+
+#ifdef OLED_DISPLAY
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
+#define BUTTON_A 31
+#define BUTTON_B 30
+#define BUTTON_C 27
+Adafruit_SSD1306 display = Adafruit_SSD1306(128, 32, &Wire);
+
+#define CLEAR_DISPLAY_AFTER_MS 5000
+
+unsigned long clearDisplay = 0;
+
+void updateDisplay()
+{
+  display.display();
+  clearDisplay = millis() + CLEAR_DISPLAY_AFTER_MS;
+}
+
+void sleepDisplay() {
+  display.ssd1306_command(SSD1306_DISPLAYOFF);
+}
+
+void wakeDisplay() {
+  display.ssd1306_command(SSD1306_DISPLAYON);
+}
+#else 
+#define LED_PIN LED_BUILTIN
+// SET A VARIABLE TO STORE THE LED STATE
+int ledState = LOW;
+
+void toggleLed()
+{
+     // TOGGLE THE LED STATE : 
+    ledState = !ledState; // SET ledState TO THE OPPOSITE OF ledState
+    digitalWrite(LED_PIN,ledState); // WRITE THE NEW ledState
+}
+
+
+#endif
 
 //#define CONFIG_REMINDER_ALARM
 #define CONFIG_PERIODIC_ALARM
@@ -39,6 +79,7 @@
 
 
 // #include <Wire.h>
+char daysOfTheWeek[7][12] = {"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"};
 
 RTC_DS3231 rtc;
 Adafruit_DRV2605 haptic;
@@ -64,26 +105,70 @@ void setNextPeriodic() {
          }
 }
 
-#define LED_PIN LED_BUILTIN
-// SET A VARIABLE TO STORE THE LED STATE
-int ledState = LOW;
-
-void toggleLed()
+void
+displayTime()
 {
-     // TOGGLE THE LED STATE : 
-    ledState = !ledState; // SET ledState TO THE OPPOSITE OF ledState
-    digitalWrite(LED_PIN,ledState); // WRITE THE NEW ledState
+  DateTime now = rtc.now();
+  VPRINT(now.year(), DEC);
+  VPRINT('/');
+  VPRINT(now.month(), DEC);
+  VPRINT('/');
+  VPRINT(now.day(), DEC);
+  VPRINT(" (");
+  VPRINT(daysOfTheWeek[now.dayOfTheWeek()]);
+  VPRINT(") ");
+  VPRINT(now.hour(), DEC);
+  VPRINT(':');
+  VPRINT(now.minute(), DEC);
+  VPRINT(':');
+  VPRINTLN(now.second(), DEC);
+#ifdef OLED_DISPLAY
+  display.setCursor(0,10);
+  display.print(daysOfTheWeek[now.dayOfTheWeek()]);
+  display.print(' ');
+  display.print(now.year(), DEC);
+  display.print('/');
+  display.print(now.month(), DEC);
+  display.print('/');
+  display.print(now.day(), DEC);
+  display.print(' ');
+  display.print(now.hour(), DEC);
+  display.print(':');
+  display.print(now.minute(), DEC);
+  display.print(':');
+  display.println(now.second(), DEC);
+#endif
 }
+
 
 void setup() {
 #ifdef VERBOSE  
     Serial.begin(9600);
 #endif
+
+#ifdef OLED_DISPLAY
+  // SSD1306_SWITCHCAPVCC = generate display voltage from 3.3V internally
+  display.begin(SSD1306_SWITCHCAPVCC, 0x3C); // Address 0x3C for 128x32
+   // Clear the buffer.
+  display.clearDisplay();
+  display.display();
+   pinMode(BUTTON_A, INPUT_PULLUP);
+  pinMode(BUTTON_B, INPUT_PULLUP);
+  pinMode(BUTTON_C, INPUT_PULLUP);
+  // text display tests
+  display.setTextSize(1);
+  display.setTextColor(SSD1306_WHITE);
+  display.setCursor(0,0);
+  display.println("NUDGE v0.1");
+  updateDisplay();
+#endif
+
+#ifdef LED_PIN
   pinMode(LED_PIN,OUTPUT);
   digitalWrite(LED_PIN,ledState);
-
   toggleLed();
-  
+#endif
+
   VPRINTLN("setup:start");
   // pinMode(BUTTON_INTERRUPT_PIN, INPUT_PULLUP);  
   button.attach(BUTTON_PIN, INPUT_PULLUP);
@@ -105,11 +190,11 @@ void setup() {
     }
 
   VPRINTLN("rtc: started");
-   if(rtc.lostPower()) {
-       VPRINTLN("RTC lost power, let's set the time!");
+#ifdef SET_RTC_TIME
+       VPRINTLN("RTC SET TIME!");
         // this will adjust to the date and time at compilation
         rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
-    }
+#endif
 
     //we don't need the 32K Pin, so disable it
     rtc.disable32K();
@@ -145,6 +230,9 @@ void setup() {
     VPRINTLN("rtc: PERIODIC REMINDER NOT CONFIGURED");
 #endif
 
+    displayTime();
+    updateDisplay();
+    
      haptic.begin();
      haptic.selectLibrary(1);
   
@@ -154,16 +242,17 @@ void setup() {
 #ifndef VERBOSE
  // Serial.end();   // Shut this down to limit power
 #endif
+#ifdef LED_PIN
   toggleLed();
-  
+#endif
+
+
 #ifdef NRF52
   sd_power_mode_set(NRF_POWER_MODE_LOWPWR);
   sd_power_dcdc_mode_set(NRF_POWER_DCDC_ENABLE);    // This saves power
 #endif
 
 }
-
-
 
 void playEffect(uint8_t effect)
 {
@@ -565,10 +654,22 @@ void loop() {
   button.update();
   if (button.pressed()) {
         VPRINTLN("Button Pressed");
-        toggleLed(); 
+#ifdef LED_PIN
+        toggleLed();
+#endif 
+#ifdef OLED_DISPLAY
+        wakeDisplay();
+        display.setCursor(0,0);
+        display.print("Click");
+        displayTime();
+        updateDisplay();
+#endif    
         playEffect(BUTTON_PRESSED_HAPTIC);
         delay(500);
+#ifdef LED_PIN
         toggleLed();
+#endif
+
   }
   if (event) {
 #ifdef BUTTON_INTERRUPT
@@ -582,12 +683,31 @@ void loop() {
         rtc.clearAlarm(PERIODIC_RTC_ALARM);
         VPRINTLN("Periodic Alarm");
         setNextPeriodic();
+#ifdef OLED_DISPLAY
+        wakeDisplay();
+        display.setCursor(0,0);
+        displayTime(); 
+        updateDisplay();   
+#endif
+#ifdef LED_PIN
         toggleLed();
+#endif
         playEffect(PERIODIC_ALARM_HAPTIC);
         delay(500);
+#ifdef LED_PIN
         toggleLed();
+#endif
         }   
     }
+  }
+#ifdef OLED_DISPLAY  
+  if (clearDisplay) {
+    if (millis() > clearDisplay) {
+        display.clearDisplay();
+        sleepDisplay();
+        clearDisplay = 0;
+    }
+#endif
   }
 }
 
