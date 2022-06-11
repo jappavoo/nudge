@@ -9,8 +9,96 @@
 #include <RTClib.h>
 #include <Adafruit_DRV2605.h>
 
+#define DEFAULT_PERIOD_MINUTES 20
+
+#define MAX_PERIODICS 16
+struct PeriodicAlarms {
+  TimeSpan when;
+  char msg[16];
+  uint8_t haptic;
+} Periodics[MAX_PERIODICS] = {
+  [0] = { DEFAULT_PERIOD_MINUTES * 60, "Periodic", 0 },
+  [1] = {0,"",0},
+  [2] = {0,"",0},
+  [3] = {0,"",0},
+  [4] = {0,"",0},
+  [5] = {0,"",0},
+  [6] = {0,"",0},
+  [7] = {0,"",0},
+  [8] = {0,"",0},
+  [9] = {0,"",0},
+  [10] = {0,"",0},
+  [11] = {0,"",0},
+  [12] = {0,"",0},
+  [13] = {0,"",0},
+  [14] = {0,"",0},
+  [15] = {0,"",0}
+};
+
+#define MAX_REMINDERS 32
+struct ReminderAlarms {
+  TimeSpan when;
+  char    msg[16];
+  uint8_t haptic;
+} Reminders[MAX_REMINDERS] = {
+  [0] = { 0, "", 0 },
+  [1] = {0,"",0},
+  [2] = {0,"",0},
+  [3] = {0,"",0},
+  [4] = {0,"",0},
+  [5] = {0,"",0},
+  [6] = {0,"",0},
+  [7] = {0,"",0},
+  [8] = {0,"",0},
+  [9] = {0,"",0},
+  [10] = {0,"",0},
+  [11] = {0,"",0},
+  [12] = {0,"",0},
+  [13] = {0,"",0},
+  [14] = {0,"",0},
+  [15] = {0,"",0}, 
+  [16] = { 0, "", 0 },
+  [17] = {0,"",0},
+  [18] = {0,"",0},
+  [19] = {0,"",0},
+  [20] = {0,"",0},
+  [21] = {0,"",0},
+  [22] = {0,"",0},
+  [23] = {0,"",0},
+  [24] = {0,"",0},
+  [25] = {0,"",0},
+  [26] = {0,"",0},
+  [27] = {0,"",0},
+  [28] = {0,"",0},
+  [29] = {0,"",0},
+  [30] = {0,"",0},
+  [31] = {0,"",0}
+};
+
+#define BAT_INFO
+
+// Uncommenting this will cause displayed time to be updated
+// while time is showing  --- I found this behaviour to be distracting
+//#define UPDATE_TIME
+
 //#define SET_RTC_TIME
 
+//#define CONFIG_REMINDER_ALARM
+#define CONFIG_PERIODIC_ALARM
+
+
+
+// #define VERBOSE
+
+#ifdef VERBOSE
+#define VPRINTLN(...) Serial.println(__VA_ARGS__)
+#define VPRINT(...) Serial.print(__VA_ARGS__)
+#else
+#define VPRINTLN(...) 
+#define VPRINT(...) 
+#endif 
+#define BLE_UART
+#define BLE_UART_ECHO_MSG
 #define OLED_DISPLAY
 
 #ifdef OLED_DISPLAY
@@ -20,15 +108,20 @@
 #define BUTTON_B 30
 #define BUTTON_C 27
 Adafruit_SSD1306 display = Adafruit_SSD1306(128, 32, &Wire);
+Bounce2::Button buttonA = Bounce2::Button();
 
 #define CLEAR_DISPLAY_AFTER_MS 5000
 
 unsigned long clearDisplay = 0;
 
-void updateDisplay()
+void updateDisplay(bool clear)
 {
   display.display();
-  clearDisplay = millis() + CLEAR_DISPLAY_AFTER_MS;
+  if (clear) {
+     clearDisplay = millis() + CLEAR_DISPLAY_AFTER_MS;
+  } else {   
+     clearDisplay = 0;
+  }
 }
 
 void sleepDisplay() {
@@ -53,35 +146,200 @@ void toggleLed()
 
 #endif
 
-//#define CONFIG_REMINDER_ALARM
-#define CONFIG_PERIODIC_ALARM
+#ifdef BLE_UART
+#include <bluefruit.h>
+#include <Adafruit_LittleFS.h>
+#include <InternalFileSystem.h>
+
+// BLE Service
+BLEDfu  bledfu;  // OTA DFU service
+BLEDis  bledis;  // device information
+BLEUart bleuart; // uart over ble
+BLEBas  blebas;  // battery
 
 
-//#define VERBOSE
+void startAdv(void)
+{
+  // Advertising packet
+  Bluefruit.Advertising.addFlags(BLE_GAP_ADV_FLAGS_LE_ONLY_GENERAL_DISC_MODE);
+  Bluefruit.Advertising.addTxPower();
 
-#ifdef VERBOSE
-#define VPRINTLN(...) Serial.println(__VA_ARGS__)
-#define VPRINT(...) Serial.print(__VA_ARGS__)
-#else
-#define VPRINTLN(...) 
-#define VPRINT(...) 
-#endif 
+  // Include bleuart 128-bit uuid
+  Bluefruit.Advertising.addService(bleuart);
+
+  // Secondary Scan Response packet (optional)
+  // Since there is no room for 'Name' in Advertising packet
+  Bluefruit.ScanResponse.addName();
+  
+  /* Start Advertising
+   * - Enable auto advertising if disconnected
+   * - Interval:  fast mode = 20 ms, slow mode = 152.5 ms
+   * - Timeout for fast mode is 30 seconds
+   * - Start(timeout) with timeout = 0 will advertise forever (until connected)
+   * 
+   * For recommended advertising interval
+   * https://developer.apple.com/library/content/qa/qa1931/_index.html   
+   */
+  Bluefruit.Advertising.restartOnDisconnect(false);
+  Bluefruit.Advertising.setInterval(32, 244);    // in unit of 0.625 ms
+  Bluefruit.Advertising.setFastTimeout(30);      // number of seconds in fast mode
+  Bluefruit.Advertising.start(0);                // 0 = Don't stop advertising after n seconds 
+       wakeDisplay();
+      displayTime(); 
+      displayMsg("BLE_UART: Advertising");
+      updateDisplay(false);   
+}
+
+#define BLE_MSG_LEN 40
+char ble_msg[BLE_MSG_LEN];
+int ble_msg_len = 0;
+
+void ble_msg_reset() {
+  ble_msg_len = 0;
+  ble_msg[0] = 0;
+}
+void ble_msg_add(char c) {
+  VPRINT("BLE_MSG_ADD: ");
+  VPRINT(ble_msg_len);
+  VPRINT(" : ");
+  VPRINTLN(ble_msg);
+  if (ble_msg_len >= (BLE_MSG_LEN-1)) ble_msg_len = 0;
+  ble_msg[ble_msg_len] = c;
+  ble_msg_len++;
+  ble_msg[ble_msg_len] = 0;
+}
+
+bool ble_setup = false;
+bool ble_uart_connected = false;
+// callback invoked when central connects
+void connect_callback(uint16_t conn_handle)
+{
+  ble_uart_connected = true;
+  ble_msg_reset();
+  // Get the reference to current connection
+  BLEConnection* connection = Bluefruit.Connection(conn_handle);
+
+  char central_name[32] = { 0 };
+  connection->getPeerName(central_name, sizeof(central_name));
+
+  VPRINT("Connected to ");
+  VPRINTLN(central_name);
+  wakeDisplay();
+  displayTime(); 
+  displayMsg("BLE_UART: Connected");
+  updateDisplay(true);  
+}
+
+/**
+ * Callback invoked when a connection is dropped
+ * @param conn_handle connection where this event happens
+ * @param reason is a BLE_HCI_STATUS_CODE which can be found in ble_hci.h
+ */
+void disconnect_callback(uint16_t conn_handle, uint8_t reason)
+{
+  (void) conn_handle;
+  (void) reason;
+   ble_uart_connected = false;
+  VPRINTLN();
+  VPRINT("Disconnected, reason = 0x"); VPRINTLN(reason, HEX);
+  wakeDisplay();
+  displayTime(); 
+  displayMsg("BLE_UART: Connected");
+  updateDisplay(true); 
+}
+
+void ble_uart_setup()
+{
+  VPRINTLN("BLE_UART: Setup Started");
+
+  if (!ble_setup) { 
+    // Setup the BLE LED to be enabled on CONNECT
+    // Note: This is actually the default behavior, but provided
+    // here in case you want to control this LED manually via PIN 19
+    Bluefruit.autoConnLed(true);
+
+    // Config the peripheral connection with maximum bandwidth 
+    // more SRAM required by SoftDevice
+    // Note: All config***() function must be called before begin()
+    Bluefruit.configPrphBandwidth(BANDWIDTH_MAX);
+
+    Bluefruit.setName("Nudge");
+    Bluefruit.begin();
+    Bluefruit.setTxPower(4);    // Check bluefruit.h for supported values
+    //Bluefruit.setName(getMcuUniqueID()); // useful testing with multiple central connections
+    Bluefruit.Periph.setConnectCallback(connect_callback);
+    Bluefruit.Periph.setDisconnectCallback(disconnect_callback);
+
+    // To be consistent OTA DFU should be added first if it exists
+    bledfu.begin();
+
+    // Configure and Start Device Information Service
+    bledis.setManufacturer("Adafruit Industries");
+    bledis.setModel("Bluefruit Feather52");
+    bledis.begin();
+
+    // Configure and Start BLE Uart Service
+    bleuart.begin();
+
+    // Start BLE Battery Service
+    blebas.begin();
+    blebas.write(100);
+    ble_setup = true;
+  }
+    // Set up and start advertising
+  startAdv();
+
+  VPRINTLN("BLE_UART: Please use Adafruit's Bluefruit LE app to connect in UART mode");
+}
+#endif
+
+
+
 
 #define REMINDER_RTC_ALARM 1
 
 #define PERIODIC_RTC_ALARM 2
-#define DEFAULT_PERIOD_MINUTES 20
+
 
 #define STRONG_CLICK 17
 #define STRONG_BUZZ 14
 #define BUTTON_PRESSED_HAPTIC STRONG_CLICK
 #define PERIODIC_ALARM_HAPTIC STRONG_BUZZ
 
+// this code will not compile unless you modify 
+// RTC_DDS3231 to be:  class RTC_DS3231 : protected RTC_I2C {
+//  default is private inheritance and then we don't have acces to 
+//  i2c_dev :-(
+class MY_RTC_DS3231 : public RTC_DS3231 {
+public:
+  bool getAlarm1(DateTime &dt, Ds3231Alarm1Mode &alarm_mode);      
+  bool getAlarm2(DateTime &dt, Ds3231Alarm2Mode &alarm_mode);                      
+};
 
-// #include <Wire.h>
-char daysOfTheWeek[7][12] = {"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"};
+bool MY_RTC_DS3231::getAlarm1(DateTime &dt, Ds3231Alarm1Mode &alarm_mode)   {
 
-RTC_DS3231 rtc;
+  uint8_t buffer[4];
+  buffer[0] = 0x07;   // DS3231 ARLM 1 ADDR
+  i2c_dev->write_then_read(buffer, 1, buffer, 4);
+
+  for (int i=0; i<4; i++){ 
+     VPRINTLN(buffer[i], HEX);
+  }
+  return true;
+}
+
+bool MY_RTC_DS3231::getAlarm2(DateTime &dt, Ds3231Alarm2Mode &alarm_mode)   {
+
+  uint8_t buffer[3];
+  buffer[0] = 0x0b;   // DS3231 ARLM 2 ADDR
+  i2c_dev->write_then_read(buffer, 1, buffer, 3);
+
+  for (int i=0; i<3; i++){ 
+     VPRINTLN(buffer[i], HEX);
+  }
+  return true;
+}
+MY_RTC_DS3231 rtc;
 Adafruit_DRV2605 haptic;
 
 // the pin that is connected to SQW
@@ -91,52 +349,68 @@ Adafruit_DRV2605 haptic;
 #define DEBOUNCE_MS 5 //Debouncing Time in Milliseconds
 Bounce2::Button button = Bounce2::Button();
 
+DateTime nextPeriodicAlarm;
 
 void setNextPeriodic() {
-         // schedule an alarm 10 seconds in the future
-        if(!rtc.setAlarm2(
-            rtc.now() + TimeSpan(60 * DEFAULT_PERIOD_MINUTES),
-            DS3231_A2_Minute 
-            )) {
+        DateTime tnow = rtc.now();
+        uint32_t nowSecs = tnow.secondstime();
+        TimeSpan secondsToNext((60 * DEFAULT_PERIOD_MINUTES) - (nowSecs % (60 * DEFAULT_PERIOD_MINUTES)));
+        nextPeriodicAlarm = tnow + secondsToNext;
+        
+        if(!rtc.setAlarm2(nextPeriodicAlarm, DS3231_A2_Minute)) {
               VPRINTLN("Error, alarm wasn't set!");
          } else {
             VPRINT("Periodic Alarm in: "); VPRINT(DEFAULT_PERIOD_MINUTES);
             VPRINTLN(" minutes");
-         }
+        }
+}
+
+void 
+displayMsg(const char *msg) {
+  VPRINT(msg);
+#ifdef OLED_DISPLAY
+  display.setTextSize(1);
+  display.print(msg);
+#endif
+}
+
+
+void 
+displayNextPeriodic()
+{
+  char timebuf[9] = "hh:mm:ss";
+
+  nextPeriodicAlarm.toString(timebuf);
+  VPRINT("Next Periodic: ");
+  VPRINTLN(timebuf);
+
+#ifdef OLED_DISPLAY
+  display.setTextSize(1);
+  display.print(timebuf);
+#endif
 }
 
 void
 displayTime()
 {
+  char datebuf[20] = "DDD DD MMM DD/MM/YY";
+  char timebuf[9] = "hh:mm:ss";
+
+
   DateTime now = rtc.now();
-  VPRINT(now.year(), DEC);
-  VPRINT('/');
-  VPRINT(now.month(), DEC);
-  VPRINT('/');
-  VPRINT(now.day(), DEC);
-  VPRINT(" (");
-  VPRINT(daysOfTheWeek[now.dayOfTheWeek()]);
-  VPRINT(") ");
-  VPRINT(now.hour(), DEC);
-  VPRINT(':');
-  VPRINT(now.minute(), DEC);
-  VPRINT(':');
-  VPRINTLN(now.second(), DEC);
+  now.toString(datebuf);
+  now.toString(timebuf);
+
+  VPRINTLN(datebuf);
+  VPRINTLN(timebuf);
+  
 #ifdef OLED_DISPLAY
-  display.setCursor(0,10);
-  display.print(daysOfTheWeek[now.dayOfTheWeek()]);
-  display.print(' ');
-  display.print(now.year(), DEC);
-  display.print('/');
-  display.print(now.month(), DEC);
-  display.print('/');
-  display.print(now.day(), DEC);
-  display.print(' ');
-  display.print(now.hour(), DEC);
-  display.print(':');
-  display.print(now.minute(), DEC);
-  display.print(':');
-  display.println(now.second(), DEC);
+  display.setCursor(0,0);
+  display.setTextSize(1);
+  display.println(datebuf);
+
+  display.setTextSize(2);
+  display.println(timebuf);
 #endif
 }
 
@@ -152,15 +426,16 @@ void setup() {
    // Clear the buffer.
   display.clearDisplay();
   display.display();
-   pinMode(BUTTON_A, INPUT_PULLUP);
-  pinMode(BUTTON_B, INPUT_PULLUP);
-  pinMode(BUTTON_C, INPUT_PULLUP);
+  buttonA.attach(BUTTON_B, INPUT_PULLUP);
+  buttonA.interval(DEBOUNCE_MS);
+  buttonA.setPressedState(LOW); 
+
+  // pinMode(BUTTON_A, INPUT_PULLUP);
+  // pinMode(BUTTON_C, INPUT_PULLUP);
+ 
   // text display tests
   display.setTextSize(1);
-  display.setTextColor(SSD1306_WHITE);
-  display.setCursor(0,0);
-  display.println("NUDGE v0.1");
-  updateDisplay();
+  display.setTextColor(SSD1306_WHITE,SSD1306_BLACK);
 #endif
 
 #ifdef LED_PIN
@@ -231,7 +506,8 @@ void setup() {
 #endif
 
     displayTime();
-    updateDisplay();
+    displayMsg("NUDGE v0.1");
+    updateDisplay(true);
     
      haptic.begin();
      haptic.selectLibrary(1);
@@ -246,7 +522,11 @@ void setup() {
   toggleLed();
 #endif
 
-
+#ifdef BAT_INFO
+ // Get a single ADC sample and throw it away
+  readVBAT();
+#endif
+  
 #ifdef NRF52
   sd_power_mode_set(NRF_POWER_MODE_LOWPWR);
   sd_power_dcdc_mode_set(NRF_POWER_DCDC_ENABLE);    // This saves power
@@ -646,31 +926,71 @@ unsigned int event = 0;
 
 #define RTC_ALARM_EVENT (1U << 1 )
 
+void docmd(char *cmd) {
+  switch (cmd[0]) {
+    case 'S':
+      // MMM DD YYYY - Apr 16 2020
+      char *date = &cmd[1];
+      date[11] = 0; 
+      // hh:mm:ss
+      char *stime = &cmd[13];
+      stime[8]=0;;
+      rtc.adjust(DateTime(date, stime));
+      VPRINT("Set: ");
+      VPRINT(date);
+      VPRINT(" ");
+      VPRINTLN(stime);
+      break;
+   }
+}
+
 void loop() {
 #ifdef NRF52
   sd_power_mode_set(NRF_POWER_MODE_LOWPWR);
   waitForEvent();
 #endif
   button.update();
+#ifdef OLED_DISPLAY
+  buttonA.update();
+#endif  
   if (button.pressed()) {
         VPRINTLN("Button Pressed");
+        
 #ifdef LED_PIN
         toggleLed();
 #endif 
 #ifdef OLED_DISPLAY
         wakeDisplay();
-        display.setCursor(0,0);
-        display.print("Click");
         displayTime();
-        updateDisplay();
+        displayNextPeriodic();
+#ifdef BAT_INFO
+        float vbat_mv = readVBAT();
+       // Convert from raw mv to percentage (based on LIPO chemistry)
+        uint8_t vbat_per = mvToPercent(vbat_mv);
+        
+        displayMsg(" Bat: ");
+       // display.print(vbat_mv);
+       // display.print("mV (");
+        display.print(vbat_per);
+        display.print("%");       
+#endif        
+        updateDisplay(true);
 #endif    
         playEffect(BUTTON_PRESSED_HAPTIC);
         delay(500);
 #ifdef LED_PIN
         toggleLed();
 #endif
-
   }
+#ifdef OLED_DISPLAY
+  if (buttonA.pressed()) {
+        wakeDisplay();
+        displayTime();
+        displayMsg("BLE UART: Start");
+        ble_uart_setup();
+        updateDisplay(true); 
+  }
+#endif
   if (event) {
 #ifdef BUTTON_INTERRUPT
     if (event &  BUTTON_EVENT) {
@@ -685,9 +1005,9 @@ void loop() {
         setNextPeriodic();
 #ifdef OLED_DISPLAY
         wakeDisplay();
-        display.setCursor(0,0);
         displayTime(); 
-        updateDisplay();   
+        displayMsg("Periodic");
+        updateDisplay(true);   
 #endif
 #ifdef LED_PIN
         toggleLed();
@@ -700,6 +1020,27 @@ void loop() {
         }   
     }
   }
+
+#ifdef BLE_UART
+  if (ble_uart_connected) {
+     while ( bleuart.available())  {
+      char ch = bleuart.read();
+      if (ch == '\n') {
+ #ifdef BLE_UART_ECHO_MSG
+         wakeDisplay();
+         displayTime(); 
+         displayMsg(ble_msg);
+         updateDisplay(true);
+#endif
+         docmd(ble_msg);
+         ble_msg_reset();   
+      } else {
+         ble_msg_add(ch);
+      } 
+    }
+  }
+#endif
+  
 #ifdef OLED_DISPLAY  
   if (clearDisplay) {
     if (millis() > clearDisplay) {
@@ -707,8 +1048,16 @@ void loop() {
         sleepDisplay();
         clearDisplay = 0;
     }
+#ifdef UPDATE_TIME    
+    else {
+        displayTime();
+#ifdef OLED_DISPLAY
+        display.display();
 #endif
-  }
+    }
+#endif
+#endif
+  }  
 }
 
 void rtos_idle_callback(void)
@@ -726,6 +1075,61 @@ void onButton() {
    event |= BUTTON_EVENT;
 }
 #endif
+
+
+
+uint32_t vbat_pin = PIN_VBAT;             // A7 for feather nRF52832, A6 for nRF52840
+
+#define VBAT_MV_PER_LSB   (0.73242188F)   // 3.0V ADC range and 12-bit ADC resolution = 3000mV/4096
+
+#ifdef NRF52840_XXAA
+#define VBAT_DIVIDER      (0.5F)          // 150K + 150K voltage divider on VBAT
+#define VBAT_DIVIDER_COMP (2.0F)          // Compensation factor for the VBAT divider
+#else
+#define VBAT_DIVIDER      (0.71275837F)   // 2M + 0.806M voltage divider on VBAT = (2M / (0.806M + 2M))
+#define VBAT_DIVIDER_COMP (1.403F)        // Compensation factor for the VBAT divider
+#endif
+
+#define REAL_VBAT_MV_PER_LSB (VBAT_DIVIDER_COMP * VBAT_MV_PER_LSB)
+
+
+float readVBAT(void) {
+  float raw;
+
+  // Set the analog reference to 3.0V (default = 3.6V)
+  analogReference(AR_INTERNAL_3_0);
+
+  // Set the resolution to 12-bit (0..4095)
+  analogReadResolution(12); // Can be 8, 10, 12 or 14
+
+  // Let the ADC settle
+  delay(1);
+
+  // Get the raw 12-bit, 0..3000mV ADC value
+  raw = analogRead(vbat_pin);
+
+  // Set the ADC back to the default settings
+  analogReference(AR_DEFAULT);
+  analogReadResolution(10);
+
+  // Convert the raw value to compensated mv, taking the resistor-
+  // divider into account (providing the actual LIPO voltage)
+  // ADC range is 0..3000mV and resolution is 12-bit (0..4095)
+  return raw * REAL_VBAT_MV_PER_LSB;
+}
+
+uint8_t mvToPercent(float mvolts) {
+  if(mvolts<3300)
+    return 0;
+
+  if(mvolts <3600) {
+    mvolts -= 3300;
+    return mvolts/30;
+  }
+
+  mvolts -= 3600;
+  return 10 + (mvolts * 0.15F );  // thats mvolts /6.66666666
+}
 
 /*static uint8_t read_i2c_register(uint8_t addr, uint8_t reg) {
     Wire.beginTransmission(addr);
