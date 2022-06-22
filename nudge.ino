@@ -97,7 +97,7 @@ struct ReminderAlarms {
 #define VPRINTLN(...) 
 #define VPRINT(...) 
 #endif 
-#define BLE_UART
+//#define BLE_UART
 #define BLE_UART_ECHO_MSG
 #define OLED_DISPLAY
 
@@ -962,13 +962,14 @@ void loop() {
 #ifdef OLED_DISPLAY
         wakeDisplay();
         displayTime();
+        displayMsg("NA:");
         displayNextPeriodic();
 #ifdef BAT_INFO
         float vbat_mv = readVBAT();
        // Convert from raw mv to percentage (based on LIPO chemistry)
         uint8_t vbat_per = mvToPercent(vbat_mv);
         
-        displayMsg(" Bat: ");
+        displayMsg(" Bat:");
        // display.print(vbat_mv);
        // display.print("mV (");
         display.print(vbat_per);
@@ -987,6 +988,7 @@ void loop() {
         wakeDisplay();
         displayTime();
         displayMsg("BLE UART: Start");
+        
         ble_uart_setup();
         updateDisplay(true); 
   }
