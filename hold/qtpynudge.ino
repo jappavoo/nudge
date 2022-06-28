@@ -4,6 +4,7 @@
 #include <Adafruit_DRV2605.h>
 
 #define OLED_DISPLAY
+#define OLED_RST_PIN A1
 
 #ifdef NEO
 #include <Adafruit_NeoPixel.h>
@@ -43,7 +44,7 @@ Adafruit_NeoPixel pixels(NUMPIXELS, PIN_NEOPIXEL, NEO_GRB + NEO_KHZ800);
 unsigned int event = 0;
 #define RTC_ALARM_EVENT (1U << 1 )
 
-Adafruit_SSD1306 display = Adafruit_SSD1306(128, 32, &Wire);
+Adafruit_SSD1306 display = Adafruit_SSD1306(128, 32, &Wire, OLD_RST_PIN);
 RTC_DS3231 rtc;
 Adafruit_DRV2605 haptic;
 DateTime nextPeriodicAlarm;
@@ -598,7 +599,7 @@ void setup() {
   // rtc.adjust(DateTime(2014, 1, 21, 3, 0, 0));
   delay(1000); // let system settle to see if it helps with battery oled startup issues
   
-   display.begin(SSD1306_SWITCHCAPVCC, 0x3C); // Address 0x3C for 128x32
+   display.begin(SSD1306_SWITCHCAPVCC, 0x3C, true, true); // Address 0x3C for 128x32
    // Clear the buffer.
   display.clearDisplay();
   //display.display();

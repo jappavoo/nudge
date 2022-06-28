@@ -9,6 +9,12 @@
 #include <RTClib.h>
 #include <Adafruit_DRV2605.h>
 
+#define VERBOSE
+#define  QTPY
+#ifdef QTPY
+#define OLED_RST_PIN A1
+#endif
+
 #define DEFAULT_PERIOD_MINUTES 20
 
 #define MAX_PERIODICS 16
@@ -88,7 +94,7 @@ struct ReminderAlarms {
 
 
 
-// #define VERBOSE
+
 
 #ifdef VERBOSE
 #define VPRINTLN(...) Serial.println(__VA_ARGS__)
@@ -97,18 +103,30 @@ struct ReminderAlarms {
 #define VPRINTLN(...) 
 #define VPRINT(...) 
 #endif 
-//#define BLE_UART
+
+#ifndef QTPY
+#define BLE_UART
+#else
+#undef BLE_UART
+#endif
+
 #define BLE_UART_ECHO_MSG
 #define OLED_DISPLAY
 
 #ifdef OLED_DISPLAY
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
+
+
+#ifdef QTPY
+Adafruit_SSD1306 display = Adafruit_SSD1306(128, 32, &Wire, OLED_RST_PIN);
+#else
 #define BUTTON_A 31
 #define BUTTON_B 30
 #define BUTTON_C 27
 Adafruit_SSD1306 display = Adafruit_SSD1306(128, 32, &Wire);
 Bounce2::Button buttonA = Bounce2::Button();
+#endif
 
 #define CLEAR_DISPLAY_AFTER_MS 5000
 
@@ -342,8 +360,12 @@ bool MY_RTC_DS3231::getAlarm2(DateTime &dt, Ds3231Alarm2Mode &alarm_mode)   {
 MY_RTC_DS3231 rtc;
 Adafruit_DRV2605 haptic;
 
+#ifdef QTPY
+#define CLOCK_INTERRUPT_PIN A3
+#else
 // the pin that is connected to SQW
 #define CLOCK_INTERRUPT_PIN A2
+#endif
 
 #define BUTTON_PIN A0
 #define DEBOUNCE_MS 5 //Debouncing Time in Milliseconds
@@ -420,23 +442,7 @@ void setup() {
     Serial.begin(9600);
 #endif
 
-#ifdef OLED_DISPLAY
-  // SSD1306_SWITCHCAPVCC = generate display voltage from 3.3V internally
-  display.begin(SSD1306_SWITCHCAPVCC, 0x3C); // Address 0x3C for 128x32
-   // Clear the buffer.
-  display.clearDisplay();
-  display.display();
-  buttonA.attach(BUTTON_B, INPUT_PULLUP);
-  buttonA.interval(DEBOUNCE_MS);
-  buttonA.setPressedState(LOW); 
 
-  // pinMode(BUTTON_A, INPUT_PULLUP);
-  // pinMode(BUTTON_C, INPUT_PULLUP);
- 
-  // text display tests
-  display.setTextSize(1);
-  display.setTextColor(SSD1306_WHITE,SSD1306_BLACK);
-#endif
 
 #ifdef LED_PIN
   pinMode(LED_PIN,OUTPUT);
@@ -505,10 +511,7 @@ void setup() {
     VPRINTLN("rtc: PERIODIC REMINDER NOT CONFIGURED");
 #endif
 
-    displayTime();
-    displayMsg("NUDGE v0.1");
-    updateDisplay(true);
-    
+
      haptic.begin();
      haptic.selectLibrary(1);
   
@@ -526,7 +529,32 @@ void setup() {
  // Get a single ADC sample and throw it away
   readVBAT();
 #endif
-  
+
+#ifdef OLED_DISPLAY
+  // SSD1306_SWITCHCAPVCC = generate display voltage from 3.3V internally
+  display.begin(SSD1306_SWITCHCAPVCC, 0x3C, true, true); // Address 0x3C for 128x32
+   // Clear the buffer.
+  display.clearDisplay();
+  display.display();
+
+#ifndef QTPY  
+  buttonA.attach(BUTTON_B, INPUT_PULLUP);
+  buttonA.interval(DEBOUNCE_MS);
+  buttonA.setPressedState(LOW); 
+#endif
+
+  // pinMode(BUTTON_A, INPUT_PULLUP);
+  // pinMode(BUTTON_C, INPUT_PULLUP);
+ 
+  // text display tests
+  display.setTextSize(1);
+  display.setTextColor(SSD1306_WHITE,SSD1306_BLACK);
+#endif
+
+    displayTime();
+    displayMsg("NUDGE v0.3");
+    updateDisplay(true);
+    
 #ifdef NRF52
   sd_power_mode_set(NRF_POWER_MODE_LOWPWR);
   sd_power_dcdc_mode_set(NRF_POWER_DCDC_ENABLE);    // This saves power
@@ -951,7 +979,9 @@ void loop() {
 #endif
   button.update();
 #ifdef OLED_DISPLAY
+#ifndef QTPY
   buttonA.update();
+#endif
 #endif  
   if (button.pressed()) {
         VPRINTLN("Button Pressed");
@@ -984,6 +1014,7 @@ void loop() {
 #endif
   }
 #ifdef OLED_DISPLAY
+#ifndef QTPY
   if (buttonA.pressed()) {
         wakeDisplay();
         displayTime();
@@ -992,6 +1023,7 @@ void loop() {
         ble_uart_setup();
         updateDisplay(true); 
   }
+#endif
 #endif
   if (event) {
 #ifdef BUTTON_INTERRUPT
@@ -1079,9 +1111,11 @@ void onButton() {
 #endif
 
 
-
+#ifdef QTPY
+uint32_t vbat_pin = A2;
+#else
 uint32_t vbat_pin = PIN_VBAT;             // A7 for feather nRF52832, A6 for nRF52840
-
+#endif
 #define VBAT_MV_PER_LSB   (0.73242188F)   // 3.0V ADC range and 12-bit ADC resolution = 3000mV/4096
 
 #ifdef NRF52840_XXAA
@@ -1098,8 +1132,10 @@ uint32_t vbat_pin = PIN_VBAT;             // A7 for feather nRF52832, A6 for nRF
 float readVBAT(void) {
   float raw;
 
+#ifndef QTPY
   // Set the analog reference to 3.0V (default = 3.6V)
   analogReference(AR_INTERNAL_3_0);
+#endif
 
   // Set the resolution to 12-bit (0..4095)
   analogReadResolution(12); // Can be 8, 10, 12 or 14
@@ -1110,9 +1146,11 @@ float readVBAT(void) {
   // Get the raw 12-bit, 0..3000mV ADC value
   raw = analogRead(vbat_pin);
 
+#ifndef QTPY
   // Set the ADC back to the default settings
   analogReference(AR_DEFAULT);
   analogReadResolution(10);
+#endif
 
   // Convert the raw value to compensated mv, taking the resistor-
   // divider into account (providing the actual LIPO voltage)
